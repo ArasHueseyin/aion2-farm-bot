@@ -69,6 +69,9 @@ def dispatch(message, caller=call_app):
 
 
 def main():
+    # Windows console defaults may be CP1252; MCP stdio is always UTF-8.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     for line in sys.stdin:
         try:
             response = dispatch(json.loads(line))
