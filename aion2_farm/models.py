@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import base64
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -16,7 +17,29 @@ KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789") | {
     "pageup", "pagedown", "leftmouse", "rightmouse", "middlemouse",
 } | {f"f{i}" for i in range(1, 13)}
 ALIASES = {"strg": "ctrl", "steuerung": "ctrl", "leer": "space",
-           "leertaste": "space", "esc": "escape", "return": "enter"}
+           "leertaste": "space", "esc": "escape", "return": "enter",
+           "linke maustaste": "leftmouse", "rechte maustaste": "rightmouse",
+           "linksklick": "leftmouse", "rechtsklick": "rightmouse", "lmb": "leftmouse", "rmb": "rightmouse"}
+
+
+def key_label(value: str) -> str:
+    names = {"leftmouse": "Linke Maustaste", "rightmouse": "Rechte Maustaste", "middlemouse": "Mittlere Maustaste"}
+    return " + ".join(names.get(key, key) for key in parse_keys(value, optional=True))
+
+
+def validate_reference(region, reference, label):
+    if region:
+        if not isinstance(region, list) or len(region) != 4 or any(type(x) is not int for x in region):
+            raise ValueError(f"{label}: ungültiger Bildbereich.")
+        if min(region[:2]) < 0 or min(region[2:]) < 3 or max(region) > 32000:
+            raise ValueError(f"{label}: ungültige Bereichsgröße.")
+    if reference:
+        try:
+            valid = len(base64.b64decode(reference, validate=True)) == 16 * 16 * 3
+        except (ValueError, TypeError):
+            valid = False
+        if not valid:
+            raise ValueError(f"{label}: ungültiges Referenzbild.")
 
 
 def parse_keys(value: str, *, optional: bool = False) -> tuple[str, ...]:
@@ -47,11 +70,19 @@ class Skill:
     key: str = "1"
     cooldown: float = 3.0
     pause: float = 0.4
+    hold: float = 0.08
+    mana_cost: float | None = None
+    ready_region: list[int] = field(default_factory=list)
+    ready_reference: str = ""
 
     def validate(self):
-        parse_keys(self.key)
+        self.key = "+".join(parse_keys(self.key))
         self.cooldown = number(self.cooldown, "Skill-Cooldown", 0.1, 3600)
         self.pause = number(self.pause, "Skill-Pause", 0, 120)
+        self.hold = number(self.hold, "Haltedauer", 0.02, 30)
+        if self.mana_cost is not None:
+            self.mana_cost = number(self.mana_cost, "Manakosten", 0, 1000000)
+        validate_reference(self.ready_region, self.ready_reference, "Skill-Symbol")
 
 
 @dataclass
@@ -79,6 +110,7 @@ class Profile:
     class_name: str = "Eigene Klasse"
     mode: str = "combined"
     process: str = "Aion2.exe"
+    input_method: str = "scancode"
     countdown: float = 5.0
     max_minutes: float = 30.0
     round_limit: int = 0
@@ -90,6 +122,14 @@ class Profile:
     gather_every: float = 3.0
     combat_seconds: float = 20.0
     gather_seconds: float = 6.0
+    alternate_mouse: bool = True
+    mouse_interval: float = 0.7
+    mouse_hold: float = 0.1
+    vision_enabled: bool = True
+    max_mana: float = 0
+    vision_size: list[int] = field(default_factory=list)
+    mana_region: list[int] = field(default_factory=list)
+    mana_reference: str = ""
     movement_keys: str = "w,a,s,d,q,e,space,shift,ctrl,up,down,left,right"
     skills: list[Skill] = field(default_factory=lambda: [
         Skill("1", 1.0, 0.3), Skill("2", 5.0, 0.5), Skill("3", 8.0, 0.5),
@@ -104,6 +144,8 @@ class Profile:
             raise ValueError("Der Profilname muss 1 bis 100 Zeichen lang sein.")
         if self.mode not in MODES:
             raise ValueError("Unbekannter Farmmodus.")
+        if self.input_method not in ("scancode", "virtual", "messages"):
+            raise ValueError("Unbekannte Eingabemethode.")
         self.process = self.process.strip()
         if not self.process.lower().endswith(".exe") or any(x in self.process for x in "\\/:"):
             raise ValueError("Prozess: Nur den Dateinamen eingeben, etwa Aion2.exe.")
@@ -115,6 +157,9 @@ class Profile:
             ("gather_every", "Sammel-Intervall", 0.2, 3600),
             ("combat_seconds", "Kampfdauer", 0.1, 3600),
             ("gather_seconds", "Sammeldauer", 0.1, 3600),
+            ("mouse_interval", "Abstand der Mausklicks", 0.1, 30),
+            ("mouse_hold", "Maus-Haltedauer", 0.02, 10),
+            ("max_mana", "Maximales Mana", 0, 1000000),
         ):
             setattr(self, attr, number(getattr(self, attr), label, lo, hi))
         rounds = number(self.round_limit, "Rundenlimit", 0, 1000000)
@@ -125,8 +170,14 @@ class Profile:
         parse_keys(self.loot_key, optional=True)
         parse_keys(self.interact_key)
         parse_keys(self.movement_keys)
-        if for_run and self.mode != "gather" and not self.skills:
-            raise ValueError("Mindestens einen Skill für den Kampf eintragen.")
+        if type(self.alternate_mouse) is not bool or type(self.vision_enabled) is not bool:
+            raise ValueError("Maus- und HUD-Optionen müssen ein- oder ausgeschaltet sein.")
+        if self.vision_size and (not isinstance(self.vision_size, list) or len(self.vision_size) != 2 or
+                                 any(type(x) is not int or not 100 <= x <= 32000 for x in self.vision_size)):
+            raise ValueError("Ungültige HUD-Auflösung.")
+        validate_reference(self.mana_region, self.mana_reference, "Manabalken")
+        if for_run and self.mode != "gather" and not self.skills and not self.alternate_mouse:
+            raise ValueError("Mindestens einen Skill oder die abwechselnden Mausklicks aktivieren.")
         if len(self.skills) > 100 or len(self.route) > 20000:
             raise ValueError("Zu viele Skills oder Routenschritte.")
         for skill in self.skills:

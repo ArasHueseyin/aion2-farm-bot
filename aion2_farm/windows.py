@@ -4,6 +4,10 @@ import ctypes as C
 from ctypes import wintypes as W
 import os
 import threading
+import subprocess
+import sys
+from pathlib import Path
+from dataclasses import dataclass
 
 user32 = C.WinDLL("user32", use_last_error=True)
 kernel32 = C.WinDLL("kernel32", use_last_error=True)
@@ -57,6 +61,15 @@ kernel32.CloseHandle.argtypes = [W.HANDLE]
 kernel32.GetModuleHandleW.argtypes = [W.LPCWSTR]
 kernel32.GetModuleHandleW.restype = W.HMODULE
 kernel32.GetCurrentThreadId.restype = W.DWORD
+kernel32.GetCurrentProcess.restype = W.HANDLE
+user32.GetWindowTextLengthW.argtypes = [W.HWND]
+user32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, C.c_int]
+user32.GetClientRect.argtypes = [W.HWND, C.POINTER(W.RECT)]
+user32.ClientToScreen.argtypes = [W.HWND, C.POINTER(W.POINT)]
+user32.GetCursorPos.argtypes = [C.POINTER(W.POINT)]
+user32.ScreenToClient.argtypes = [W.HWND, C.POINTER(W.POINT)]
+user32.PostMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
+user32.PostMessageW.restype = W.BOOL
 user32.SetWindowsHookExW.argtypes = [C.c_int, HOOKPROC, W.HINSTANCE, W.DWORD]
 user32.SetWindowsHookExW.restype = W.HHOOK
 user32.CallNextHookEx.argtypes = [W.HHOOK, C.c_int, W.WPARAM, W.LPARAM]
@@ -83,6 +96,170 @@ MOUSE_FLAGS = {"leftmouse": (0x0002, 0x0004), "rightmouse": (0x0008, 0x0010),
                "middlemouse": (0x0020, 0x0040)}
 
 
+def enable_dpi_awareness():
+    # Keep window bounds, mouse coordinates and captured HUD pixels in the same physical space.
+    try:
+        method = user32.SetProcessDpiAwarenessContext
+        method.argtypes = [W.HANDLE]
+        method.restype = W.BOOL
+        if method(C.c_void_p(-4)):
+            return
+    except AttributeError:
+        pass
+    try:
+        user32.SetProcessDPIAware()
+    except AttributeError:
+        pass
+
+
+class PROCESSENTRY32(C.Structure):
+    _fields_ = [("dwSize", W.DWORD), ("cntUsage", W.DWORD), ("th32ProcessID", W.DWORD),
+                ("th32DefaultHeapID", ULONG_PTR), ("th32ModuleID", W.DWORD), ("cntThreads", W.DWORD),
+                ("th32ParentProcessID", W.DWORD), ("pcPriClassBase", W.LONG),
+                ("dwFlags", W.DWORD), ("szExeFile", W.WCHAR * 260)]
+
+
+kernel32.CreateToolhelp32Snapshot.argtypes = [W.DWORD, W.DWORD]
+kernel32.CreateToolhelp32Snapshot.restype = W.HANDLE
+kernel32.Process32FirstW.argtypes = [W.HANDLE, C.POINTER(PROCESSENTRY32)]
+kernel32.Process32FirstW.restype = W.BOOL
+kernel32.Process32NextW.argtypes = [W.HANDLE, C.POINTER(PROCESSENTRY32)]
+kernel32.Process32NextW.restype = W.BOOL
+ENUMWINDOWSPROC = C.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+user32.EnumWindows.argtypes = [ENUMWINDOWSPROC, W.LPARAM]
+user32.IsWindowVisible.argtypes = [W.HWND]
+user32.IsWindowVisible.restype = W.BOOL
+advapi32 = C.WinDLL("advapi32", use_last_error=True)
+advapi32.OpenProcessToken.argtypes = [W.HANDLE, W.DWORD, C.POINTER(W.HANDLE)]
+advapi32.OpenProcessToken.restype = W.BOOL
+advapi32.GetTokenInformation.argtypes = [W.HANDLE, C.c_int, C.c_void_p, W.DWORD, C.POINTER(W.DWORD)]
+advapi32.GetTokenInformation.restype = W.BOOL
+advapi32.GetSidSubAuthorityCount.argtypes = [C.c_void_p]
+advapi32.GetSidSubAuthorityCount.restype = C.POINTER(W.BYTE)
+advapi32.GetSidSubAuthority.argtypes = [C.c_void_p, W.DWORD]
+advapi32.GetSidSubAuthority.restype = C.POINTER(W.DWORD)
+
+
+def process_list():
+    result = []
+    snapshot = kernel32.CreateToolhelp32Snapshot(2, 0)
+    if not snapshot or snapshot == C.c_void_p(-1).value:
+        return result
+    try:
+        entry = PROCESSENTRY32(dwSize=C.sizeof(PROCESSENTRY32))
+        ok = kernel32.Process32FirstW(snapshot, C.byref(entry))
+        while ok:
+            result.append({"pid": entry.th32ProcessID, "name": entry.szExeFile})
+            ok = kernel32.Process32NextW(snapshot, C.byref(entry))
+        return result
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+
+def process_integrity(pid=None):
+    process = kernel32.GetCurrentProcess() if pid is None else kernel32.OpenProcess(0x1000, False, pid)
+    if not process:
+        return None
+    token = W.HANDLE()
+    try:
+        if not advapi32.OpenProcessToken(process, 0x0008, C.byref(token)):
+            return None
+        length = W.DWORD()
+        advapi32.GetTokenInformation(token, 25, None, 0, C.byref(length))
+        if not length.value:
+            return None
+        buffer = C.create_string_buffer(length.value)
+        if not advapi32.GetTokenInformation(token, 25, buffer, length.value, C.byref(length)):
+            return None
+        # TOKEN_MANDATORY_LABEL starts with SID_AND_ATTRIBUTES; its first member is PSID.
+        sid = C.cast(buffer, C.POINTER(C.c_void_p)).contents.value
+        count = advapi32.GetSidSubAuthorityCount(sid)[0]
+        return advapi32.GetSidSubAuthority(sid, count - 1)[0] if count else None
+    finally:
+        if token:
+            kernel32.CloseHandle(token)
+        if pid is not None:
+            kernel32.CloseHandle(process)
+
+
+def integrity_label(level):
+    if level is None:
+        return "nicht lesbar"
+    if level >= 0x4000:
+        return "System"
+    if level >= 0x3000:
+        return "Administrator"
+    if level >= 0x2000:
+        return "Normal"
+    return "Eingeschränkt"
+
+
+def inspect_game(process):
+    candidates = [row for row in process_list() if row["name"].casefold() == process.casefold()]
+    by_pid = {row["pid"]: row for row in candidates}
+    def collect(hwnd, unused):
+        pid = W.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, C.byref(pid))
+        if pid.value in by_pid and user32.IsWindowVisible(hwnd):
+            by_pid[pid.value]["hwnd"] = int(hwnd)
+        return True
+    callback = ENUMWINDOWSPROC(collect)
+    user32.EnumWindows(callback, 0)
+    windowed = [row for row in candidates if row.get("hwnd")]
+    targets = windowed or candidates
+    own = process_integrity()
+    for row in targets:
+        row["integrity"] = process_integrity(row["pid"])
+    report = {"bot_integrity": own, "targets": targets, "status": "ready", "message": "Rechteprüfung erfolgreich."}
+    if not targets:
+        report.update(status="missing", message=f"Kein laufender Prozess {process} gefunden.")
+    elif own is None or any(row["integrity"] is None for row in targets):
+        report.update(status="unknown", message="Die Rechteebenen konnten nicht vollständig gelesen werden.")
+    elif any(row["integrity"] > own for row in targets):
+        report.update(status="rights", message="Das Spiel läuft mit höheren Rechten als die App. "
+                      "Unter Diagnose mit Administratorrechten neu starten und die Windows-Abfrage selbst bestätigen.")
+    return report
+
+
+def check_input_permissions(process):
+    report = inspect_game(process)
+    if report["status"] == "rights":
+        raise PermissionError(report["message"])
+    if report["status"] == "missing":
+        raise RuntimeError(report["message"])
+    return report
+
+
+def relaunch_elevated(profile_path, *, control=False):
+    frozen = getattr(sys, "frozen", False)
+    arguments = ["--profile", str(profile_path)]
+    if control:
+        arguments.append("--mcp-control")
+    if not frozen:
+        arguments = ["-m", "aion2_farm", *arguments]
+    working = Path(sys.executable).parent if frozen else Path(__file__).resolve().parent.parent
+    shell = C.WinDLL("shell32", use_last_error=True)
+    shell.ShellExecuteW.argtypes = [W.HWND, W.LPCWSTR, W.LPCWSTR, W.LPCWSTR, W.LPCWSTR, C.c_int]
+    shell.ShellExecuteW.restype = C.c_void_p
+    C.set_last_error(0)
+    result = shell.ShellExecuteW(None, "runas", sys.executable, subprocess.list2cmdline(arguments), str(working), 1)
+    if not result or result <= 32:
+        raise OSError(C.get_last_error() or result or 1, "Administrator-Neustart wurde abgebrochen oder abgelehnt.")
+
+
+def game_client_bounds(process):
+    hwnd = user32.GetForegroundWindow()
+    if foreground_process()[0].casefold() != process.casefold():
+        raise RuntimeError("Für die HUD-Erkennung muss das Spiel im Vordergrund sein.")
+    rect, origin = W.RECT(), W.POINT(0, 0)
+    if not user32.GetClientRect(hwnd, C.byref(rect)) or not user32.ClientToScreen(hwnd, C.byref(origin)):
+        raise RuntimeError("Größe des Spielfensters nicht lesbar.")
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    if width < 100 or height < 100:
+        raise RuntimeError("Spielfenster ist minimiert oder zu klein.")
+    return int(hwnd), (origin.x, origin.y, origin.x + width, origin.y + height)
+
+
 def foreground_process() -> tuple[str, int]:
     hwnd = user32.GetForegroundWindow()
     if not hwnd:
@@ -91,34 +268,81 @@ def foreground_process() -> tuple[str, int]:
     thread = user32.GetWindowThreadProcessId(hwnd, C.byref(pid))
     handle = kernel32.OpenProcess(0x1000, False, pid.value)
     if not handle:
-        return "", thread
+        return next((row["name"] for row in process_list() if row["pid"] == pid.value), ""), thread
     try:
         size = W.DWORD(32768)
         buffer = C.create_unicode_buffer(size.value)
         if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, C.byref(size)):
-            return "", thread
+            return next((row["name"] for row in process_list() if row["pid"] == pid.value), ""), thread
         return os.path.basename(buffer.value), thread
     finally:
         kernel32.CloseHandle(handle)
 
 
+@dataclass
+class WindowMessage:
+    hwnd: int
+    message: int
+    wparam: int
+    lparam: int
+
+
 class WindowsInput:
-    def __init__(self, process: str):
+    def __init__(self, process: str, method="scancode"):
+        if method not in ("scancode", "virtual", "messages"):
+            raise ValueError("Unbekannte Eingabemethode.")
+        self.method = method
         self.process = process.casefold()
         self.held: dict[str, INPUT] = {}
         self.lock = threading.RLock()
+        self.own_integrity = process_integrity()
+        self.checked_pid = None
+
+    def _check_rights(self):
+        pid = W.DWORD()
+        user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), C.byref(pid))
+        if self.checked_pid != pid.value:
+            target = process_integrity(pid.value)
+            if target is not None and self.own_integrity is not None and target > self.own_integrity:
+                raise PermissionError("Spiel: Administratorrechte; App: normale Rechte. Unter Diagnose als Administrator neu starten.")
+            self.checked_pid = pid.value
 
     def has_focus(self):
         return foreground_process()[0].casefold() == self.process
 
     def _send(self, packet):
+        C.set_last_error(0)
+        if isinstance(packet, WindowMessage):
+            if not user32.PostMessageW(packet.hwnd, packet.message, packet.wparam, packet.lparam):
+                raise RuntimeError(f"Fensternachricht abgelehnt (Windows-Fehler {C.get_last_error()}).")
+            return
         if user32.SendInput(1, C.byref(packet), C.sizeof(INPUT)) != 1:
-            raise RuntimeError("Windows hat die Eingabe abgelehnt. Rechte von Spiel und Bot prüfen.")
+            error = C.get_last_error()
+            raise RuntimeError(f"Windows hat die Eingabe abgelehnt (Fehler {error}). Rechte unter Diagnose prüfen.")
 
     def _packet(self, key, up=False):
+        if self.method == "messages":
+            hwnd = user32.GetForegroundWindow()
+            if key in MOUSE_FLAGS:
+                point = W.POINT()
+                if not user32.GetCursorPos(C.byref(point)) or not user32.ScreenToClient(hwnd, C.byref(point)):
+                    raise RuntimeError("Mausposition nicht lesbar.")
+                messages = {"leftmouse": (0x201, 0x202, 1), "rightmouse": (0x204, 0x205, 2),
+                            "middlemouse": (0x207, 0x208, 16)}
+                down, release, flag = messages[key]
+                return WindowMessage(int(hwnd), release if up else down, 0 if up else flag,
+                                     (point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16))
+            _, thread = foreground_process()
+            scan = user32.MapVirtualKeyExW(VK[key], 4, user32.GetKeyboardLayout(thread))
+            lparam = 1 | ((scan & 0xFF) << 16) | (0x01000000 if scan & 0xFF00 else 0)
+            if up:
+                lparam |= 0xC0000000
+            return WindowMessage(int(hwnd), 0x101 if up else 0x100, VK[key], lparam)
         if key in MOUSE_FLAGS:
             flags = MOUSE_FLAGS[key][int(up)]
             return INPUT(type=0, mi=MOUSEINPUT(dwFlags=flags))
+        if self.method == "virtual":
+            return INPUT(type=1, ki=KEYBDINPUT(wVk=VK[key], dwFlags=0x0002 if up else 0))
         _, thread = foreground_process()
         layout = user32.GetKeyboardLayout(thread)
         scan = user32.MapVirtualKeyExW(VK[key], 4, layout)
@@ -134,6 +358,13 @@ class WindowsInput:
                 return
             if not self.has_focus():
                 raise RuntimeError("Spielfokus verloren. Keine Eingabe gesendet.")
+            self._check_rights()
+            if any(key in MOUSE_FLAGS for key in keys):
+                _, bounds = game_client_bounds(self.process)
+                point = W.POINT()
+                if not user32.GetCursorPos(C.byref(point)) or not (
+                        bounds[0] <= point.x < bounds[2] and bounds[1] <= point.y < bounds[3]):
+                    raise RuntimeError("Mauszeiger liegt außerhalb des Spielfensters. Vor dem Start auf die Spielwelt richten.")
             for key in keys:
                 if stop_event.is_set():
                     break
@@ -151,6 +382,7 @@ class WindowsInput:
                 return
             if not self.has_focus():
                 raise RuntimeError("Spielfokus verloren. Keine Mausbewegung gesendet.")
+            self._check_rights()
             self._send(INPUT(type=0, mi=MOUSEINPUT(dx=dx, dy=dy, dwFlags=0x0001)))
 
     def release_all(self):

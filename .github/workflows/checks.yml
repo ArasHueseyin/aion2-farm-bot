@@ -23,5 +23,6 @@ jobs:
           name: Aion2Farm-windows-x64
           path: |
             dist/Aion2Farm.exe
+            dist/Aion2FarmMCP.exe
             dist/SHA256SUMS.txt
             dist/smoke-test.json

@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from .models import Profile, Step, parse_keys
+from .models import Profile, Step, parse_keys, key_label
 
 
 class StopRun(Exception):
@@ -20,11 +20,12 @@ class Stats:
     skills: int = 0
     gathers: int = 0
     elapsed: float = 0.0
+    clicks: int = 0
 
 
 class Runner:
     def __init__(self, profile: Profile, backend, emit=lambda kind, data: None,
-                 *, preview=False, speed=1.0):
+                 *, preview=False, speed=1.0, perception=None):
         self.profile = profile
         self.backend = backend
         self.emit = emit
@@ -37,6 +38,10 @@ class Runner:
         self.next_target = 0.0
         self.next_loot = 0.0
         self.next_skill = [0.0] * len(profile.skills)
+        self.perception = perception
+        self.next_mouse = 0.0
+        self.mouse_right = False
+        self.skill_between_clicks = False
 
     def stop(self):
         self.stop_event.set()
@@ -63,15 +68,15 @@ class Runner:
                 return
             self.stop_event.wait(min(0.02, remaining))
 
-    def _press(self, chord: str, label: str):
+    def _press(self, chord: str, label: str, hold=0.08):
         keys = parse_keys(chord, optional=True)
         if not keys:
             return
         self._check()
         try:
             self.backend.set_held(keys, self.stop_event)
-            self.emit("log", f"{label}: {'+'.join(keys)}")
-            self._wait(0.08)
+            self.emit("log", f"{label}: {key_label('+'.join(keys))}")
+            self._wait(hold)
         finally:
             self.backend.release_all()
 
@@ -86,13 +91,30 @@ class Runner:
                 self.next_target = time.monotonic() + self.profile.target_every / self.speed
             if time.monotonic() >= end:
                 break
+            if self.profile.alternate_mouse and time.monotonic() >= self.next_mouse:
+                button = "rightmouse" if self.mouse_right else "leftmouse"
+                self._press(button, "Grundangriff", self.profile.mouse_hold)
+                self.stats.clicks += 1
+                self.mouse_right = not self.mouse_right
+                self.next_mouse = time.monotonic() + self.profile.mouse_interval / self.speed
+                self.skill_between_clicks = False
+            if time.monotonic() >= end:
+                break
             # Rotate the priority cursor so a short-cooldown first skill cannot starve later skills.
             for offset in range(len(self.profile.skills)):
                 index = (getattr(self, "skill_cursor", 0) + offset) % len(self.profile.skills)
                 skill = self.profile.skills[index]
-                if time.monotonic() >= self.next_skill[index]:
-                    self._press(skill.key, "Skill")
+                if self.profile.alternate_mouse and self.skill_between_clicks:
+                    break
+                available = self.preview or not self.profile.vision_enabled
+                if not available and self.perception is not None:
+                    available = self.perception.can_use(index, skill)
+                if time.monotonic() >= self.next_skill[index] and available:
+                    self._press(skill.key, "Skill", skill.hold)
                     self.stats.skills += 1
+                    self.skill_between_clicks = True
+                    if self.perception is not None and not self.preview:
+                        self.perception.consumed(index, skill)
                     self.next_skill[index] = time.monotonic() + skill.cooldown / self.speed
                     self.skill_cursor = (index + 1) % len(self.profile.skills)
                     self._wait(min(skill.pause, max(0, end - time.monotonic()) * self.speed))
@@ -156,7 +178,7 @@ class Runner:
         outcome = "stopped"
         try:
             self.profile.validate(for_run=True)
-            label = "Vorschau (10×)" if self.preview else "LIVE"
+            label = f"Vorschau ({self.speed:g}×)" if self.preview else "LIVE"
             self.emit("log", f"{label}: Start in {self.profile.countdown:g} Sekunden.")
             self.emit("phase", "Startverzögerung – zum Spiel wechseln")
             # The startup delay is always real time.

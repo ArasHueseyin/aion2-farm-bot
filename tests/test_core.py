@@ -40,7 +40,7 @@ class FakeInput:
 
 def fast_runner(profile, backend, events):
     runner = Runner(profile, backend, lambda kind, value: events.append((kind, value)),
-                    preview=True, speed=30)
+                    preview=True, speed=1)
     wait = runner._wait
     def wait_without_startup(seconds, *, focus=True):
         if focus:
@@ -130,6 +130,33 @@ class RecorderTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
+    def test_mouse_alternates_and_at_most_one_skill_runs_between_clicks(self):
+        backend, events = FakeInput(), []
+        profile = Profile(mode="combat", round_limit=1, combat_seconds=2.5,
+                          mouse_interval=.1, mouse_hold=.02, target_key="", loot_key="",
+                          skills=[Skill("1", .1, 0, .02), Skill("2", .1, 0, .02)])
+        runner = fast_runner(profile, backend, events)
+        self.assertEqual(runner.run(), "completed")
+        clicks = [key[0] for key in backend.presses if "mouse" in key[0]]
+        self.assertGreaterEqual(len(clicks), 4)
+        self.assertEqual(clicks, ["leftmouse" if i % 2 == 0 else "rightmouse" for i in range(len(clicks))])
+        skills_since_click = 0
+        for keys in backend.presses:
+            if "mouse" in keys[0]:
+                skills_since_click = 0
+            else:
+                skills_since_click += 1
+                self.assertLessEqual(skills_since_click, 1)
+
+    def test_unknown_hud_blocks_skills_while_basic_mouse_attacks_continue(self):
+        backend, events = FakeInput(), []
+        profile = Profile(mode="combat", round_limit=1, combat_seconds=.5, target_key="", loot_key="")
+        runner = fast_runner(profile, backend, events)
+        runner.preview = False
+        self.assertEqual(runner.run(), "completed")
+        self.assertTrue(backend.presses)
+        self.assertTrue(all("mouse" in keys[0] for keys in backend.presses))
+
     def test_each_mode_executes_only_its_selected_actions(self):
         for mode in ("combat", "gather", "combined"):
             with self.subTest(mode=mode):
