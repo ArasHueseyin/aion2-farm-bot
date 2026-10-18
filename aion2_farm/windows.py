@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from dataclasses import dataclass
+from .models import INPUT_METHODS
 
 user32 = C.WinDLL("user32", use_last_error=True)
 kernel32 = C.WinDLL("kernel32", use_last_error=True)
@@ -70,6 +71,14 @@ user32.GetCursorPos.argtypes = [C.POINTER(W.POINT)]
 user32.ScreenToClient.argtypes = [W.HWND, C.POINTER(W.POINT)]
 user32.PostMessageW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
 user32.PostMessageW.restype = W.BOOL
+user32.WindowFromPoint.argtypes = [W.POINT]
+user32.WindowFromPoint.restype = W.HWND
+user32.IsChild.argtypes = [W.HWND, W.HWND]
+user32.IsChild.restype = W.BOOL
+user32.SendMessageTimeoutW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM, W.UINT, W.UINT, C.POINTER(ULONG_PTR)]
+user32.SendMessageTimeoutW.restype = LRESULT
+user32.keybd_event.argtypes = [W.BYTE, W.BYTE, W.DWORD, ULONG_PTR]
+user32.mouse_event.argtypes = [W.DWORD, W.DWORD, W.DWORD, W.DWORD, ULONG_PTR]
 user32.SetWindowsHookExW.argtypes = [C.c_int, HOOKPROC, W.HINSTANCE, W.DWORD]
 user32.SetWindowsHookExW.restype = W.HHOOK
 user32.CallNextHookEx.argtypes = [W.HHOOK, C.c_int, W.WPARAM, W.LPARAM]
@@ -289,7 +298,7 @@ class WindowMessage:
 
 class WindowsInput:
     def __init__(self, process: str, method="scancode"):
-        if method not in ("scancode", "virtual", "messages"):
+        if method not in INPUT_METHODS:
             raise ValueError("Unbekannte Eingabemethode.")
         self.method = method
         self.process = process.casefold()
@@ -313,19 +322,38 @@ class WindowsInput:
     def _send(self, packet):
         C.set_last_error(0)
         if isinstance(packet, WindowMessage):
+            if self.method == "sendmessage":
+                result = ULONG_PTR()
+                if not user32.SendMessageTimeoutW(packet.hwnd, packet.message, packet.wparam, packet.lparam,
+                                                  2, 200, C.byref(result)):
+                    raise RuntimeError(f"Fensternachricht nicht bestätigt (Windows-Fehler {C.get_last_error()}).")
+                return
             if not user32.PostMessageW(packet.hwnd, packet.message, packet.wparam, packet.lparam):
                 raise RuntimeError(f"Fensternachricht abgelehnt (Windows-Fehler {C.get_last_error()}).")
+            return
+        if self.method == "legacy":
+            if packet.type == 0:
+                data = packet.mi
+                user32.mouse_event(data.dwFlags, data.dx, data.dy, data.mouseData, data.dwExtraInfo)
+            else:
+                data = packet.ki
+                user32.keybd_event(data.wVk, data.wScan, data.dwFlags, data.dwExtraInfo)
             return
         if user32.SendInput(1, C.byref(packet), C.sizeof(INPUT)) != 1:
             error = C.get_last_error()
             raise RuntimeError(f"Windows hat die Eingabe abgelehnt (Fehler {error}). Rechte unter Diagnose prüfen.")
 
     def _packet(self, key, up=False):
-        if self.method == "messages":
+        if self.method in ("messages", "sendmessage"):
             hwnd = user32.GetForegroundWindow()
             if key in MOUSE_FLAGS:
                 point = W.POINT()
-                if not user32.GetCursorPos(C.byref(point)) or not user32.ScreenToClient(hwnd, C.byref(point)):
+                if not user32.GetCursorPos(C.byref(point)):
+                    raise RuntimeError("Mausposition nicht lesbar.")
+                child = user32.WindowFromPoint(point)
+                if child and user32.IsChild(hwnd, child):
+                    hwnd = child
+                if not user32.ScreenToClient(hwnd, C.byref(point)):
                     raise RuntimeError("Mausposition nicht lesbar.")
                 messages = {"leftmouse": (0x201, 0x202, 1), "rightmouse": (0x204, 0x205, 2),
                             "middlemouse": (0x207, 0x208, 16)}
@@ -348,6 +376,9 @@ class WindowsInput:
         scan = user32.MapVirtualKeyExW(VK[key], 4, layout)
         if not scan:
             raise RuntimeError(f"Kein Windows-Scancode für {key} gefunden.")
+        if self.method == "legacy":
+            return INPUT(type=1, ki=KEYBDINPUT(wVk=VK[key], wScan=scan & 0xFF,
+                                             dwFlags=(1 if scan & 0xFF00 else 0) | (2 if up else 0)))
         flags = 0x0008 | (0x0001 if scan & 0xFF00 else 0) | (0x0002 if up else 0)
         return INPUT(type=1, ki=KEYBDINPUT(wScan=scan & 0xFF, dwFlags=flags))
 

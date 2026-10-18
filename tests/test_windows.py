@@ -55,6 +55,40 @@ class WindowsInputTests(unittest.TestCase):
         self.assertEqual(backend._packet("1").ki.wVk, ord("1"))
         self.assertEqual(backend._packet("1", up=True).ki.dwFlags, 2)
 
+    def test_legacy_backend_uses_documented_keyboard_and_mouse_calls(self):
+        from aion2_farm.windows import WindowsInput
+        backend = WindowsInput("Aion2.exe", "legacy")
+        with patch("aion2_farm.windows.user32.keybd_event") as keyboard, \
+             patch("aion2_farm.windows.user32.mouse_event") as mouse, \
+             patch("aion2_farm.windows.user32.SendInput") as send:
+            backend._send(backend._packet("space", up=True))
+            backend._send(backend._packet("rightmouse", up=True))
+            self.assertEqual(keyboard.call_args.args[0], 0x20)
+            self.assertEqual(keyboard.call_args.args[2], 2)
+            self.assertEqual(mouse.call_args.args[0], 0x10)
+            send.assert_not_called()
+
+    def test_mouse_messages_target_the_child_under_the_cursor(self):
+        from aion2_farm.windows import WindowsInput
+        backend = WindowsInput("Aion2.exe", "messages")
+        with patch("aion2_farm.windows.user32.GetForegroundWindow", return_value=123), \
+             patch("aion2_farm.windows.user32.GetCursorPos", return_value=True), \
+             patch("aion2_farm.windows.user32.WindowFromPoint", return_value=456), \
+             patch("aion2_farm.windows.user32.IsChild", return_value=True), \
+             patch("aion2_farm.windows.user32.ScreenToClient", return_value=True) as convert:
+            packet = backend._packet("leftmouse")
+            self.assertEqual(packet.hwnd, 456)
+            self.assertEqual(convert.call_args.args[0], 456)
+
+    def test_synchronous_message_failure_stops_without_unbounded_retry(self):
+        from aion2_farm.windows import WindowsInput, WindowMessage
+        backend = WindowsInput("Aion2.exe", "sendmessage")
+        with patch("aion2_farm.windows.user32.SendMessageTimeoutW", return_value=0) as send:
+            with self.assertRaises(RuntimeError):
+                backend._send(WindowMessage(123, 0x100, 0x20, 1))
+            self.assertEqual(send.call_count, 1)
+            self.assertEqual(send.call_args.args[5], 200)
+
     def test_window_messages_keep_target_and_keyboard_release_bits(self):
         from aion2_farm.windows import WindowsInput, WindowMessage
         backend = WindowsInput("Aion2.exe", "messages")

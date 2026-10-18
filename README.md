@@ -2,7 +2,7 @@
 
 Konfigurierbare Windows-App für Kampf- und Sammelroutinen. Abwechselnde Links-/Rechtsklicks, Skills mit kalibrierter Mana- und Symbolprüfung, aufnehmbare Tastaturrouten und klassenunabhängige Profile. Deutsche Oberfläche, lokale JSON-Profile, keine Anmeldung.
 
-**Version 0.3 verwendet zeitgesteuerte Routen und eine bildbasierte Freigabe für Skills.** Die HUD-Prüfung benötigt eine Kalibrierung auf das eigene Layout. Sie schätzt Mana aus dem Balken und vergleicht Skill-Symbole mit einer Referenz ohne Cooldown. Das ist eine visuelle Näherung, keine Abfrage exakter Spielzustände. Gegner, Ressourcen, Lebenspunkte, Hindernisse, Position und Inventar werden nicht erkannt; es gibt keine automatische Wegfindung. Im bisherigen Live-Test reagierte Aion2 trotz von Windows angenommener Eingaben nicht. Die Ursache ist noch offen; die App ist eine Diagnose-Vorabversion.
+**Version 0.3.1 verwendet zeitgesteuerte Routen und eine bildbasierte Freigabe für Skills.** Die HUD-Prüfung benötigt eine Kalibrierung auf das eigene Layout. Sie schätzt Mana aus dem Balken und vergleicht Skill-Symbole mit einer Referenz ohne Cooldown. Das ist eine visuelle Näherung, keine Abfrage exakter Spielzustände. Gegner, Ressourcen, Lebenspunkte, Hindernisse, Position und Inventar werden nicht erkannt; es gibt keine automatische Wegfindung. Im bisherigen Live-Test reagierte Aion2 trotz von Windows angenommener Eingaben nicht. Die Ursache ist noch offen; die App ist eine Diagnose-Vorabversion.
 
 Aion2 untersagt Bots und unbeaufsichtigte Makros; ein Einsatz kann zur Accountsperre führen. Siehe [offizielle Regeln](https://help.plaync.com/faq/aion2global/view?faqNo=7164). Die App verwendet normale Windows-Eingaben. Sie verändert keine Spieldateien und bietet keine Umgehung von Schutzsystemen.
 
@@ -89,11 +89,19 @@ Der MCP-Client startet `Aion2FarmMCP.exe` als stdio-Server ohne zusätzliche Arg
 | `farm_test_input` | Einzelne Testtaste oder abwechselnde Mausklicks für höchstens drei Sekunden ausführen |
 | `farm_stop` | Lauf stoppen und von der App gehaltene Eingaben freigeben |
 
-`farm_test_input` verwendet standardmäßig die Vorschau. Ein Live-Test benötigt ausdrücklich `"preview": false`, freien F9-Hotkey, ausreichende Rechte und das Spiel im Vordergrund. Beispielargumente: `{"key":"alternate_mouse","method":"scancode","seconds":2,"preview":false}`. Erlaubt sind die Maustasten links/rechts, `1`, `2`, `3`, `tab` und `space`; keine beliebigen Tastaturfolgen oder Programme. Das Testprofil wird vorübergehend verwendet und verändert das gespeicherte Profil nicht. Während dieses einzelnen Eingabetests werden keine regulären Skills, Routen, Zielwechsel oder Loot-Aktionen ausgeführt.
+`farm_test_input` verwendet standardmäßig die Vorschau. Ein Live-Test benötigt ausdrücklich `"preview": false`, freien F9-Hotkey, ausreichende Rechte und das Spiel im Vordergrund. Beispielargumente: `{"key":"i","method":"scancode","seconds":1,"hold":0.15,"preview":false}`. `hold` bestimmt die Haltedauer zwischen 0,02 und 1 Sekunde, höchstens die Testdauer. Erlaubt sind die Maustasten links/rechts, `1`, `2`, `3`, `tab`, `space`, `escape` und `i`; keine beliebigen Tastaturfolgen oder Programme. Das Testprofil wird vorübergehend verwendet und verändert das gespeicherte Profil nicht. Während dieses einzelnen Eingabetests werden keine regulären Skills, Routen, Zielwechsel oder Loot-Aktionen ausgeführt.
 
-Die Methoden `scancode` und `virtual` verwenden Windows `SendInput`; bei Maustasten sind sie gleich. `messages` sendet normale Fenster-Eingabenachrichten. Moderne Spiele können diese Eingaben ignorieren. Weder ein erfolgreicher API-Aufruf noch hochgezählte Aktionen bestätigen eine Reaktion des Charakters.
+| Methode | Windows-Eingabe |
+| --- | --- |
+| `scancode` | `SendInput` mit Scancodes |
+| `virtual` | `SendInput` mit virtuellen Tastencodes; Maustasten wie bei `scancode` |
+| `messages` | `PostMessageW` an das Spielfenster bzw. dessen unter dem Zeiger liegendes Kindfenster |
+| `sendmessage` | Synchrone Fensternachrichten mit 200 ms Zeitlimit |
+| `legacy` | `keybd_event` und `mouse_event`; diese älteren APIs liefern keine Empfangsbestätigung |
 
-Im lokalen Live-Test vom 18.10.2026 liefen Spiel und App mit Administratorrechten, F9 war registriert und der Spielfokus blieb erhalten. Leertaste über alle drei Methoden sowie Links-/Rechtsklicks über SendInput und Fensternachrichten wurden ohne Windows-Fehler abgeschlossen. Der Benutzer bestätigte bei allen Tests keine Reaktion des Charakters. Die Eingabe in diesem Client funktioniert damit weiterhin nicht; ein bestimmtes Schutzsystem als Ursache wurde nicht nachgewiesen. Die Testbilder und persönlichen Logs werden nicht veröffentlicht.
+Moderne Spiele können diese Eingaben ignorieren. Relative Mausbewegungen verwenden bei den Nachrichtenmethoden weiterhin `SendInput`. Weder ein erfolgreicher API-Aufruf noch hochgezählte Aktionen bestätigen eine Reaktion des Charakters. Die Oberfläche nennt diese Zähler deshalb **Klickversuche** und **Skillversuche**.
+
+Im lokalen Live-Test vom 18.10.2026 liefen Spiel und Farm-App mit Administratorrechten, F9 war registriert und der Spielfokus wurde unabhängig geprüft. Leertaste, Inventartaste und Mausklicks über die normalen Windows-Eingabewege ergaben bisher keine zuverlässig wiederholbare Spielreaktion. Ein begrenzter passiver Test erkannte für die echte und die eingespeiste Inventartaste denselben Scancode; nachfolgende Tastatur-Hooks meldeten keine Unterdrückung. Das beweist keine Annahme durch das Spiel und identifiziert kein bestimmtes Schutzsystem. Ein Versuch über vorhandene Gerätesoftware ist noch nicht als funktionierender Adapter bestätigt oder integriert. Die App bleibt eine Diagnose-Vorabversion. Persönliche Testbilder, Profile und Rohprotokolle werden nicht veröffentlicht.
 
 Die Schnittstelle aktiviert keine Fenster und bewegt den Mauszeiger nicht selbstständig. Sie ist ausschließlich an `127.0.0.1` gebunden und durch ein zufälliges Sitzungstoken geschützt. Das Token liegt nur lokal in `%LOCALAPPDATA%\Aion2Farm\control-session.json`; diese Datei nicht teilen. Der Anschluss kann nur Aion2 testen, Bilder dieses Vordergrundfensters lesen und den eigenen Lauf stoppen. Beim Beenden der App wird er geschlossen. Ohne `--mcp-control` wird kein Anschluss geöffnet.
 

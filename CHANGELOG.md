@@ -1,5 +1,15 @@
 # Änderungen
 
+## 0.3.1 – Diagnose-Vorabversion
+
+- Zwei zusätzliche Diagnosemethoden: ältere Windows-Eingabe-APIs und synchrone Fensternachrichten mit Zeitlimit.
+- Nachrichten für Maustasten berücksichtigen ein Kindfenster unter dem Mauszeiger.
+- MCP-Einzeltests unterstützen die Inventartaste `i`, `escape` und eine begrenzte Haltedauer.
+- Zähler heißen Klickversuche und Skillversuche, da die App keine tatsächlich ausgeführte Aktion bestätigt.
+- 50 automatisierte Tests, EXE-Vorschau und UTF-8-MCP-Protokolltest. Diese Prüfungen bestätigen keine Funktion im Aion2-Client.
+
+Die fehlende Annahme der Eingaben im laufenden Spiel ist weiterhin offen. Diese Version ist kein bestätigter Fix für den Farmbetrieb.
+
 ## 0.3.0 – Diagnose-Vorabversion
 
 - Optionaler lokaler MCP-Anschluss für Status, Aion2-HUD-Aufnahmen, Stopp und begrenzte Eingabetests. Kein Bildschirmwechsel durch den Anschluss.

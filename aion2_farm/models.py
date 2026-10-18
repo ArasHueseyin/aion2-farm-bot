@@ -7,6 +7,8 @@ import base64
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+INPUT_METHODS = ("scancode", "virtual", "messages", "legacy", "sendmessage")
+
 
 MODES = ("combat", "gather", "combined")
 KINDS = ("move", "turn", "combat", "gather", "wait")
@@ -144,7 +146,7 @@ class Profile:
             raise ValueError("Der Profilname muss 1 bis 100 Zeichen lang sein.")
         if self.mode not in MODES:
             raise ValueError("Unbekannter Farmmodus.")
-        if self.input_method not in ("scancode", "virtual", "messages"):
+        if self.input_method not in INPUT_METHODS:
             raise ValueError("Unbekannte Eingabemethode.")
         self.process = self.process.strip()
         if not self.process.lower().endswith(".exe") or any(x in self.process for x in "\\/:"):

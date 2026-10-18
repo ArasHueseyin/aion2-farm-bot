@@ -16,7 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__
 from .engine import Runner
-from .models import Profile, Skill, Step, number, parse_keys, profile_directory, save_profile, key_label
+from .models import INPUT_METHODS, Profile, Skill, Step, number, parse_keys, profile_directory, save_profile, key_label
 from .hud import HudMonitor, capture_game, reference_image, region_crop, mana_fraction, decode_reference
 from .region_picker import RegionPicker
 from .control import ControlServer
@@ -164,7 +164,7 @@ class App:
         self.controls.extend((self.start_button, self.preview_check))
         self.status = tk.StringVar(value="Bereit")
         ttk.Label(controls, textvariable=self.status, style="State.TLabel").pack(side="right")
-        self.stats_text = tk.StringVar(value="0 Runden   ·   0 Skills   ·   0 Sammelversuche   ·   00:00")
+        self.stats_text = tk.StringVar(value="0 Runden   ·   0 Klickversuche   ·   0 Skillversuche   ·   0 Sammelversuche   ·   00:00")
         ttk.Label(outer, textvariable=self.stats_text, style="Muted.TLabel").pack(anchor="w", pady=(0, 6))
         self.logbox = tk.Text(outer, height=4, bg="#0c1119", fg=MUTED, insertbackground=TEXT,
                               relief="flat", font=("Consolas", 9), padx=10, pady=8, state="disabled")
@@ -304,8 +304,8 @@ class App:
         ttk.Label(method, text="Eingabemethode").pack(side="left", padx=(0, 10))
         self.vars["input_method"] = tk.StringVar(value="scancode")
         ttk.Combobox(method, textvariable=self.vars["input_method"], state="readonly", width=20,
-                     values=["scancode", "virtual", "messages"]).pack(side="left")
-        ttk.Label(method, text="Windows-Scancodes / virtuelle Tasten / Fensternachrichten", style="Muted.TLabel").pack(side="left", padx=12)
+                     values=INPUT_METHODS).pack(side="left")
+        ttk.Label(method, text="Windows-API-Diagnose; Reaktion im Spiel separat prüfen", style="Muted.TLabel").pack(side="left", padx=12)
         buttons = ttk.Frame(tab)
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Neu prüfen", command=self._diagnose).pack(side="left", padx=(0, 8))
@@ -803,7 +803,7 @@ class App:
                 self.status.set(prefix + data)
             elif kind == "stats":
                 seconds = int(data["elapsed"])
-                self.stats_text.set(f"{data['rounds']} Runden   ·   {data.get('clicks', 0)} Mausklicks   ·   {data['skills']} Skills   ·   "
+                self.stats_text.set(f"{data['rounds']} Runden   ·   {data.get('clicks', 0)} Klickversuche   ·   {data['skills']} Skillversuche   ·   "
                                     f"{data['gathers']} Sammelversuche   ·   {seconds // 60:02d}:{seconds % 60:02d}")
             elif kind == "finished":
                 self.runner = None
@@ -896,27 +896,28 @@ class App:
         if self._busy():
             raise RuntimeError("Zuerst den aktuellen Lauf oder die Aufnahme stoppen.")
         key = arguments.get("key")
-        if key not in ("alternate_mouse", "leftmouse", "rightmouse", "1", "2", "3", "tab", "space"):
+        if key not in ("alternate_mouse", "leftmouse", "rightmouse", "1", "2", "3", "tab", "space", "escape", "i"):
             raise ValueError("Nicht unterstützte Testtaste.")
         selected_method = arguments.get("method", "scancode")
-        if selected_method not in ("scancode", "virtual", "messages"):
+        if selected_method not in INPUT_METHODS:
             raise ValueError("Nicht unterstützte Eingabemethode.")
         preview = arguments.get("preview", True)
         if type(preview) is not bool:
             raise ValueError("preview muss true oder false sein.")
         seconds = number(arguments.get("seconds", 1), "Testdauer", .2, 3)
+        hold = min(seconds, number(arguments.get("hold", .12), "Test-Haltedauer", .02, 1))
         if not preview:
             if not self.service or "stop" not in self.service.registered:
                 raise RuntimeError("Live-Test gesperrt: globaler F9-Hotkey fehlt.")
             check_input_permissions(profile.process)
         profile.mode, profile.route, profile.round_limit = "combat", [], 1
         profile.max_minutes, profile.countdown, profile.combat_seconds = seconds / 60, 1, seconds
-        profile.mouse_hold = min(profile.mouse_hold, .2)
+        profile.mouse_hold = hold
         profile.input_method = selected_method
         profile.target_key = profile.loot_key = ""
         profile.vision_enabled = False
         profile.alternate_mouse = key == "alternate_mouse"
-        profile.skills = [] if profile.alternate_mouse else [Skill(key, 3600, 0, .12)]
+        profile.skills = [] if profile.alternate_mouse else [Skill(key, 3600, 0, hold)]
         profile.validate(for_run=True)
         backend = PreviewInput(self.emit) if preview else WindowsInput(profile.process, selected_method)
         self.runner = Runner(profile, backend, self.emit, preview=preview, speed=1)

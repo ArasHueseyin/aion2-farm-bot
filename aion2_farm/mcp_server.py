@@ -5,6 +5,7 @@ import json
 import sys
 from . import __version__
 from .control import call_app
+from .models import INPUT_METHODS
 
 
 def schema(properties=None, required=None):
@@ -18,9 +19,10 @@ TOOLS = [
     {"name": "farm_status", "description": "Read app state, foreground process, rights, profile and recent logs. Sends no input.",
      "inputSchema": schema(), "annotations": {"readOnlyHint": True}},
     {"name": "farm_test_input", "description": "Start a bounded Aion2 input test. Preview is the default. Live needs preview=false, game foreground and global F9. No automatic window activation.",
-     "inputSchema": schema({"key": {"type": "string", "enum": ["alternate_mouse", "leftmouse", "rightmouse", "1", "2", "3", "tab", "space"]},
-                            "method": {"type": "string", "enum": ["scancode", "virtual", "messages"]},
+     "inputSchema": schema({"key": {"type": "string", "enum": ["alternate_mouse", "leftmouse", "rightmouse", "1", "2", "3", "tab", "space", "escape", "i"]},
+                            "method": {"type": "string", "enum": list(INPUT_METHODS)},
                             "seconds": {"type": "number", "minimum": 0.2, "maximum": 3},
+                            "hold": {"type": "number", "minimum": 0.02, "maximum": 1},
                             "preview": {"type": "boolean"}}, ["key"])},
     {"name": "farm_stop", "description": "Stop current run and release all inputs owned by this app.", "inputSchema": schema()},
     {"name": "farm_capture_hud", "description": "Capture only the foreground Aion2 client for input diagnosis. Does not activate windows or send input. Returns a bounded image and original size.",
